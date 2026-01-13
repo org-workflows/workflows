@@ -171,10 +171,10 @@ jobs:
 
   build:
     name: Build
-    if: ${{ inputs.run-build }}
     needs: [lint, test]
-    # lint나 test가 스킵되어도 실행
+    # lint나 test가 스킵되어도 실행, run-build가 true일 때만
     if: |
+      inputs.run-build &&
       always() &&
       (needs.lint.result == 'success' || needs.lint.result == 'skipped') &&
       (needs.test.result == 'success' || needs.test.result == 'skipped')

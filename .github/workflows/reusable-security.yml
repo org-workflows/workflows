@@ -6,7 +6,7 @@
 # 사용법:
 #   jobs:
 #     security:
-#       uses: ldmrepo/org-workflows/.github/workflows/reusable-security.yml@v1
+#       uses: org-workflows/workflows/.github/workflows/reusable-security.yml@v1
 #       secrets: inherit
 #
 # =============================================================================

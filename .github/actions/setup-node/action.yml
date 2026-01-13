@@ -1,6 +1,6 @@
 name: 'Setup Node.js Environment'
 description: 'Node.js 환경을 설정하고 의존성을 캐시합니다'
-author: 'ldmrepo'
+author: 'org-workflows/workflows'
 
 branding:
   icon: 'package'

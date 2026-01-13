@@ -6,7 +6,7 @@
 # 사용법:
 #   jobs:
 #     review:
-#       uses: ldmrepo/org-workflows/.github/workflows/reusable-code-review.yml@v1
+#       uses: org-workflows/workflows/.github/workflows/reusable-code-review.yml@v1
 #       secrets:
 #         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 #         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

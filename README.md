@@ -27,7 +27,7 @@ on:
 
 jobs:
   ci:
-    uses: ldmrepo/org-workflows/.github/workflows/reusable-ci.yml@v1
+    uses: org-workflows/workflows/.github/workflows/reusable-ci.yml@v1
     with:
       node-version: '20'
       coverage-threshold: 80
@@ -46,7 +46,7 @@ on:
 
 jobs:
   deploy:
-    uses: ldmrepo/org-workflows/.github/workflows/reusable-deploy.yml@v1
+    uses: org-workflows/workflows/.github/workflows/reusable-deploy.yml@v1
     with:
       environment: production
       url: https://example.com
@@ -66,7 +66,7 @@ on:
 
 jobs:
   security:
-    uses: ldmrepo/org-workflows/.github/workflows/reusable-security.yml@v1
+    uses: org-workflows/workflows/.github/workflows/reusable-security.yml@v1
     secrets: inherit
 ```
 
@@ -82,7 +82,7 @@ on:
 
 jobs:
   review:
-    uses: ldmrepo/org-workflows/.github/workflows/reusable-code-review.yml@v1
+    uses: org-workflows/workflows/.github/workflows/reusable-code-review.yml@v1
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -97,7 +97,7 @@ Node.js 환경을 설정하고 의존성을 캐시합니다.
 
 ```yaml
 steps:
-  - uses: ldmrepo/org-workflows/.github/actions/setup-node@v1
+  - uses: org-workflows/workflows/.github/actions/setup-node@v1
     with:
       node-version: '20'
       package-manager: 'npm'  # npm, yarn, pnpm
@@ -113,10 +113,10 @@ steps:
 
 ```yaml
 # 권장: 메이저 버전 사용
-uses: ldmrepo/org-workflows/.github/workflows/reusable-ci.yml@v1
+uses: org-workflows/workflows/.github/workflows/reusable-ci.yml@v1
 
 # 버전 고정
-uses: ldmrepo/org-workflows/.github/workflows/reusable-ci.yml@v1.0.0
+uses: org-workflows/workflows/.github/workflows/reusable-ci.yml@v1.0.0
 ```
 
 ## 필수 시크릿

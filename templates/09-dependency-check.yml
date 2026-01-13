@@ -1,0 +1,29 @@
+# =============================================================================
+# Dependency Security Check Workflow
+# org-workflows/workflows의 reusable-security 사용
+# =============================================================================
+#
+# 실행 주기: 매주 월요일 오전 9시 KST (UTC 00:00)
+# 수동 실행: Actions 탭에서 "Run workflow" 버튼
+#
+# =============================================================================
+
+name: Dependency Security Check
+
+on:
+  schedule:
+    # 매주 월요일 오전 9시 KST (UTC 00:00)
+    - cron: '0 0 * * 1'
+  workflow_dispatch:
+
+jobs:
+  security:
+    uses: org-workflows/workflows/.github/workflows/reusable-security.yml@v1
+    with:
+      node-version: '20'
+      run-npm-audit: true
+      run-secret-scan: true
+      fail-on-high: true
+      notify-slack: true
+    secrets:
+      SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}

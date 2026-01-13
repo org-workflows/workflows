@@ -1,0 +1,115 @@
+# =============================================================================
+# Migration Safety Check Workflow
+# DB 마이그레이션 파일 변경 시 안전성을 검증합니다.
+# =============================================================================
+#
+# 필수 설정:
+#   - secrets.ANTHROPIC_API_KEY: Anthropic API 키
+#
+# ⚠️ 주의: 이 워크플로우는 분석만 수행합니다.
+#          실제 마이그레이션 실행은 수동 승인 후 진행해야 합니다.
+#
+# =============================================================================
+
+name: Migration Safety Check
+
+on:
+  pull_request:
+    paths:
+      - 'migrations/**'
+      - 'prisma/migrations/**'
+
+jobs:
+  analyze:
+    name: Analyze Migration
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+      id-token: write
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Setup Claude Code
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+      
+      - name: Get Changed Migration Files
+        id: migration-files
+        run: |
+          FILES=$(gh pr diff ${{ github.event.number }} --name-only | grep -E '(migrations|prisma)' || echo "")
+          echo "files=${FILES}" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Analyze Migration Safety
+        if: steps.migration-files.outputs.files != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.number }}
+          MIGRATION_FILES: ${{ steps.migration-files.outputs.files }}
+        run: |
+          claude -p "
+            PR #${PR_NUMBER} 마이그레이션 안전성 분석
+            
+            변경된 마이그레이션 파일: ${MIGRATION_FILES}
+            
+            ## 분석 항목
+            1. 영향받는 테이블/컬럼 식별
+            2. 예상 락(Lock) 시간
+            3. 데이터 손실 가능성
+            4. 다운타임 필요 여부
+            5. 대량 데이터 처리 여부
+            
+            ## 위험도 평가 기준
+            - 🟢 Low: 단순 추가 (새 테이블, 새 nullable 컬럼, 인덱스)
+            - 🟡 Medium: 컬럼 수정, 제약조건 추가
+            - 🟠 High: 대량 데이터 변경, 컬럼 타입 변경
+            - 🔴 Critical: 테이블 삭제, 데이터 삭제, 스키마 대폭 변경
+            
+            ## 출력
+            1. PR 코멘트로 분석 결과 작성
+            2. 롤백 SQL 스크립트 생성 (migrations/rollbacks/ 디렉토리에 저장)
+            3. 위험도에 따른 라벨 추가
+            4. High/Critical인 경우 @devops-team 멘션
+            
+            ## 라벨 추가
+            gh pr edit ${PR_NUMBER} --add-label 'migration,needs-dba-review'
+          "
+      
+      - name: Create Rollback Directory
+        run: mkdir -p migrations/rollbacks
+      
+      - name: Generate Rollback Script
+        if: steps.migration-files.outputs.files != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.number }}
+        run: |
+          claude -p "
+            PR #${PR_NUMBER}의 마이그레이션에 대한 롤백 스크립트 생성
+            
+            ## 요구사항
+            1. 각 마이그레이션에 대응하는 롤백 SQL 작성
+            2. 파일명: migrations/rollbacks/rollback_pr${PR_NUMBER}_$(date +%Y%m%d).sql
+            3. 실행 순서 주석 포함
+            4. 데이터 백업 명령어 포함 (필요시)
+            
+            생성된 롤백 스크립트를 PR 코멘트에도 첨부
+          "
+      
+      - name: Commit Rollback Script
+        if: steps.migration-files.outputs.files != ''
+        run: |
+          if [ -n "$(ls -A migrations/rollbacks/ 2>/dev/null)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add migrations/rollbacks/
+            git commit -m "chore: add rollback script for PR #${{ github.event.number }}" || echo "No changes to commit"
+            git push || echo "Nothing to push"
+          fi

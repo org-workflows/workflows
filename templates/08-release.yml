@@ -1,0 +1,147 @@
+# =============================================================================
+# Release Workflow
+# 버전 태그 푸시 시 자동으로 릴리즈를 생성합니다.
+# =============================================================================
+#
+# 필수 설정:
+#   - secrets.ANTHROPIC_API_KEY: Anthropic API 키
+#
+# 사용법:
+#   git tag v1.0.0
+#   git push origin v1.0.0
+#
+# =============================================================================
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 전체 히스토리 필요 (changelog 생성용)
+      
+      - name: Setup Claude Code
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+      
+      - name: Get Previous Tag
+        id: prev-tag
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          echo "tag=${PREV_TAG}" >> $GITHUB_OUTPUT
+          echo "Previous tag: ${PREV_TAG}"
+      
+      - name: Generate Changelog
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CURRENT_TAG: ${{ github.ref_name }}
+          PREVIOUS_TAG: ${{ steps.prev-tag.outputs.tag }}
+        run: |
+          claude -p "
+            릴리즈 ${CURRENT_TAG} Changelog 생성
+            
+            이전 태그: ${PREVIOUS_TAG:-'(첫 릴리즈)'}
+            
+            ## 작업
+            1. 이전 태그 이후 모든 커밋 분석
+               - git log ${PREVIOUS_TAG}..HEAD --oneline (이전 태그가 있는 경우)
+               - git log --oneline (첫 릴리즈인 경우)
+            
+            2. Conventional Commits 기준으로 분류:
+               - ✨ Features (feat:)
+               - 🐛 Bug Fixes (fix:)
+               - 📝 Documentation (docs:)
+               - ♻️ Refactoring (refactor:)
+               - ⚡ Performance (perf:)
+               - 🔧 Chores (chore:)
+               - 💥 Breaking Changes (BREAKING CHANGE 또는 !)
+            
+            3. CHANGELOG.md 파일 업데이트
+               - 기존 내용 위에 새 버전 추가
+               - 날짜 포함
+            
+            4. RELEASE_NOTES.md 파일 생성
+               - 사용자 친화적 언어로 작성
+               - 주요 변경사항 3-5개 하이라이트
+               - Breaking Changes 강조
+               - 마이그레이션 가이드 (필요시)
+          "
+      
+      - name: Commit Changelog
+        run: |
+          if [ -f CHANGELOG.md ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add CHANGELOG.md
+            git commit -m "docs: update changelog for ${{ github.ref_name }}" || echo "No changes to commit"
+            git push origin HEAD:main || echo "Could not push to main"
+          fi
+      
+      - name: Build Release Assets
+        run: |
+          npm ci
+          npm run build
+
+          # 빌드 결과물 압축
+          tar -czf release-${{ github.ref_name }}.tar.gz dist/
+      
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 릴리즈 노트 파일 확인
+          if [ -f RELEASE_NOTES.md ]; then
+            NOTES_FILE="RELEASE_NOTES.md"
+          else
+            echo "No release notes generated, using auto-generated notes"
+            NOTES_FILE=""
+          fi
+          
+          # GitHub Release 생성 (Draft 상태)
+          if [ -n "$NOTES_FILE" ]; then
+            gh release create ${{ github.ref_name }} \
+              --title "${{ github.ref_name }}" \
+              --notes-file "$NOTES_FILE" \
+              --draft \
+              release-${{ github.ref_name }}.tar.gz
+          else
+            gh release create ${{ github.ref_name }} \
+              --title "${{ github.ref_name }}" \
+              --generate-notes \
+              --draft \
+              release-${{ github.ref_name }}.tar.gz
+          fi
+          
+          echo "📦 Release draft created: ${{ github.ref_name }}"
+      
+      - name: Notify Team
+        run: |
+          curl -X POST ${{ secrets.SLACK_WEBHOOK }} \
+            -H 'Content-type: application/json' \
+            -d '{
+              "text": "📦 새 릴리즈 초안 생성됨",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*릴리즈 ${{ github.ref_name }} 초안 생성* 📦\n<${{ github.server_url }}/${{ github.repository }}/releases|릴리즈 확인 및 발행>"
+                  }
+                }
+              ]
+            }'

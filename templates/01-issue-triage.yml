@@ -1,0 +1,87 @@
+# =============================================================================
+# Issue Triage Workflow
+# 새로운 이슈 생성 시 자동으로 분류하고 라벨을 부착합니다.
+# =============================================================================
+#
+# 필수 설정:
+#   - secrets.ANTHROPIC_API_KEY: Anthropic API 키
+#
+# 선택 설정:
+#   - secrets.SLACK_WEBHOOK: Slack 웹훅 URL (알림용)
+#
+# =============================================================================
+
+name: Issue Triage
+
+on:
+  issues:
+    types: [opened]
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      id-token: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Analyze and Label Issue
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: |
+            --allowedTools "Bash(gh issue edit *),Write"
+          prompt: |
+            이슈 #${{ github.event.issue.number }} 분석
+
+            제목: ${{ github.event.issue.title }}
+            내용: ${{ github.event.issue.body }}
+
+            ## 작업
+            1. 유형 분류: bug/feature/docs/question 중 하나
+            2. 우선순위: P0-Critical/P1-High/P2-Medium/P3-Low 중 하나
+            3. 작업량: XS/S/M/L/XL 중 하나
+            4. 컴포넌트: backend/frontend/infra/docs 중 하나
+
+            ## 판단 기준
+            - P0-Critical: 서비스 장애, 데이터 손실, 보안 취약점
+            - P1-High: 주요 기능 오류, 많은 사용자 영향
+            - P2-Medium: 일반 버그, 개선 필요
+            - P3-Low: 사소한 이슈, 제안
+
+            ## 실행
+            1. 분석이 끝나면 다음 명령어로 라벨을 추가하세요:
+               gh issue edit ${{ github.event.issue.number }} --add-label "<유형>,<우선순위>,<작업량>,<컴포넌트>"
+
+            2. 분석 결과를 /tmp/analysis.md 파일에 마크다운 형식으로 저장하세요.
+               (분류 결과, 판단 근거, 권장 조치사항 포함)
+
+      - name: Post Analysis Comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -f /tmp/analysis.md ]; then
+            gh issue comment ${{ github.event.issue.number }} --body-file /tmp/analysis.md
+          fi
+
+      - name: Notify Slack
+        if: success() && vars.SLACK_ENABLED == 'true'
+        run: |
+          curl -X POST ${{ secrets.SLACK_WEBHOOK }} \
+            -H 'Content-type: application/json' \
+            -d '{
+              "text": "🆕 새 이슈 분류 완료",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "이슈 #${{ github.event.issue.number }}: ${{ github.event.issue.title }}\n<${{ github.event.issue.html_url }}|이슈 보기>"
+                  }
+                }
+              ]
+            }'

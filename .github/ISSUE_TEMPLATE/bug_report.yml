@@ -1,0 +1,76 @@
+name: 🐛 버그 리포트
+description: 버그나 오류를 발견했을 때 사용하세요
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        버그 리포트를 작성해 주셔서 감사합니다!
+        가능한 상세히 작성해 주시면 더 빠르게 해결할 수 있습니다.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: 버그 설명
+      description: 어떤 버그인지 명확하게 설명해 주세요
+      placeholder: 예상되는 동작과 실제 동작을 설명해 주세요
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 재현 방법
+      description: 버그를 재현하는 단계를 알려주세요
+      placeholder: |
+        1. '...'로 이동
+        2. '...'를 클릭
+        3. '...'까지 스크롤
+        4. 오류 확인
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 예상 동작
+      description: 어떻게 동작해야 한다고 생각하시나요?
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 로그 / 스크린샷
+      description: 관련 로그나 스크린샷을 첨부해 주세요
+      render: shell
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: 심각도
+      options:
+        - Critical (서비스 장애)
+        - High (주요 기능 오류)
+        - Medium (일반 버그)
+        - Low (사소한 이슈)
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 버전
+      description: 사용 중인 버전 (예: v1.0.0)
+      placeholder: v1.0.0
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: 환경
+      description: 실행 환경을 알려주세요
+      placeholder: |
+        - OS: [예: macOS 14.0]
+        - Node.js: [예: 20.10.0]
+        - 브라우저: [예: Chrome 120]

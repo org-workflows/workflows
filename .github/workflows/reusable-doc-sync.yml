@@ -1,26 +1,52 @@
 # =============================================================================
-# Documentation Sync Workflow (OpenAI)
+# Reusable Documentation Sync Workflow (OpenAI)
 # API, 타입, 설정 파일 변경 시 문서 업데이트 필요 여부를 체크합니다.
 # =============================================================================
 #
-# 필수 설정:
-#   - secrets.OPENAI_API_KEY: OpenAI API 키
-#
-# 사용 모델: GPT-4o-mini (비용 효율적)
+# 사용법:
+#   jobs:
+#     docs:
+#       uses: org-workflows/workflows/.github/workflows/reusable-doc-sync.yml@v1
+#       with:
+#         pr-number: ${{ github.event.number }}
+#       secrets:
+#         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 #
 # =============================================================================
 
-name: Documentation Sync
+name: Reusable Documentation Sync
 
 on:
-  pull_request:
-    paths:
-      - 'src/api/**'
-      - 'src/routes/**'
-      - 'src/types/**'
-      - 'src/interfaces/**'
-      - '*.config.*'
-      - 'package.json'
+  workflow_call:
+    inputs:
+      pr-number:
+        description: 'Pull request number'
+        required: true
+        type: number
+      model:
+        description: 'OpenAI model to use'
+        required: false
+        type: string
+        default: 'gpt-4o-mini'
+      stale-days:
+        description: 'Days before documentation is considered stale'
+        required: false
+        type: number
+        default: 30
+      docs-path:
+        description: 'Path to documentation directory'
+        required: false
+        type: string
+        default: 'docs'
+      add-label:
+        description: 'Add documentation label if docs changed'
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      OPENAI_API_KEY:
+        description: 'OpenAI API key'
+        required: true
 
 jobs:
   check-docs:
@@ -41,13 +67,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          FILES=$(gh pr diff ${{ github.event.number }} --name-only)
+          FILES=$(gh pr diff ${{ inputs.pr-number }} --name-only)
           echo "files<<EOF" >> $GITHUB_OUTPUT
           echo "$FILES" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
           # diff 내용도 가져오기 (토큰 제한)
-          gh pr diff ${{ github.event.number }} | head -c 10000 > /tmp/pr-diff.txt
+          gh pr diff ${{ inputs.pr-number }} | head -c 10000 > /tmp/pr-diff.txt
 
       - name: Analyze Documentation Needs
         env:
@@ -63,15 +89,16 @@ jobs:
             -d "$(jq -n \
               --arg files "$CHANGED_FILES" \
               --arg diff "$DIFF_CONTENT" \
-              --arg pr_number "${{ github.event.number }}" \
+              --arg pr_number "${{ inputs.pr-number }}" \
+              --arg model "${{ inputs.model }}" \
               '{
-                model: "gpt-4o-mini",
+                model: $model,
                 messages: [{
                   role: "system",
                   content: "당신은 기술 문서 전문가입니다. 코드 변경사항을 분석하여 문서 업데이트 필요 여부를 판단합니다."
                 }, {
                   role: "user",
-                  content: ("PR #" + $pr_number + " 문서 동기화 분석\n\n## 변경된 파일\n" + $files + "\n\n## 변경 내용\n```diff\n" + $diff + "\n```\n\n## 분석 요청\n다음 항목을 분석하고 마크다운으로 체크리스트를 작성하세요:\n\n1. **API 변경**: 새 엔드포인트, 스키마 변경, 인증 변경\n2. **타입 변경**: 새 타입, 기존 타입 수정, Breaking changes\n3. **설정 변경**: 환경 변수, 설정 옵션\n\n## 출력 형식\n### 📝 문서 업데이트 체크리스트\n\n| 문서 | 상태 | 필요한 업데이트 |\n|------|------|----------------|\n| docs/api/ | ✅/⚠️/➖ | 설명 |\n| README.md | ✅/⚠️/➖ | 설명 |\n| CLAUDE.md | ✅/⚠️/➖ | 설명 |\n| .env.example | ✅/⚠️/➖ | 설명 |\n\n### 상세 안내\n(업데이트 필요한 항목에 대한 구체적 가이드)\n\n---\n🤖 *OpenAI GPT-4o-mini Documentation Check*")
+                  content: ("PR #" + $pr_number + " 문서 동기화 분석\n\n## 변경된 파일\n" + $files + "\n\n## 변경 내용\n```diff\n" + $diff + "\n```\n\n## 분석 요청\n다음 항목을 분석하고 마크다운으로 체크리스트를 작성하세요:\n\n1. **API 변경**: 새 엔드포인트, 스키마 변경, 인증 변경\n2. **타입 변경**: 새 타입, 기존 타입 수정, Breaking changes\n3. **설정 변경**: 환경 변수, 설정 옵션\n\n## 출력 형식\n### 📝 문서 업데이트 체크리스트\n\n| 문서 | 상태 | 필요한 업데이트 |\n|------|------|----------------|\n| docs/api/ | ✅/⚠️/➖ | 설명 |\n| README.md | ✅/⚠️/➖ | 설명 |\n| CLAUDE.md | ✅/⚠️/➖ | 설명 |\n| .env.example | ✅/⚠️/➖ | 설명 |\n\n### 상세 안내\n(업데이트 필요한 항목에 대한 구체적 가이드)\n\n---\n🤖 *OpenAI Documentation Check*")
                 }],
                 temperature: 0.3,
                 max_tokens: 1500
@@ -88,27 +115,27 @@ jobs:
           echo "" >> /tmp/doc-analysis.md
 
           # docs/ 디렉토리가 있는지 확인
-          if [ -d "docs" ]; then
+          if [ -d "${{ inputs.docs-path }}" ]; then
             STALE_DOCS=""
 
-            for doc in $(find docs -name "*.md" -type f 2>/dev/null); do
+            for doc in $(find ${{ inputs.docs-path }} -name "*.md" -type f 2>/dev/null); do
               DOC_DATE=$(git log -1 --format="%ct" -- "$doc" 2>/dev/null || echo "0")
               CURRENT_DATE=$(date +%s)
               DAYS_OLD=$(( (CURRENT_DATE - DOC_DATE) / 86400 ))
 
-              if [ "$DAYS_OLD" -gt 30 ]; then
+              if [ "$DAYS_OLD" -gt ${{ inputs.stale-days }} ]; then
                 STALE_DOCS="$STALE_DOCS\n- ⚠️ \`$doc\` - ${DAYS_OLD}일 전 수정"
               fi
             done
 
             if [ -n "$STALE_DOCS" ]; then
-              echo "다음 문서들이 30일 이상 업데이트되지 않았습니다:" >> /tmp/doc-analysis.md
+              echo "다음 문서들이 ${{ inputs.stale-days }}일 이상 업데이트되지 않았습니다:" >> /tmp/doc-analysis.md
               echo -e "$STALE_DOCS" >> /tmp/doc-analysis.md
             else
               echo "✅ 모든 문서가 최신 상태입니다." >> /tmp/doc-analysis.md
             fi
           else
-            echo "ℹ️ docs/ 디렉토리가 없습니다." >> /tmp/doc-analysis.md
+            echo "ℹ️ ${{ inputs.docs-path }}/ 디렉토리가 없습니다." >> /tmp/doc-analysis.md
           fi
 
       - name: Post Analysis Comment
@@ -116,16 +143,16 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ -f /tmp/doc-analysis.md ] && [ -s /tmp/doc-analysis.md ]; then
-            gh pr comment ${{ github.event.number }} --body-file /tmp/doc-analysis.md
+            gh pr comment ${{ inputs.pr-number }} --body-file /tmp/doc-analysis.md
           fi
 
       - name: Add Documentation Label
-        if: always()
+        if: inputs.add-label
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          DOC_CHANGES=$(echo "${{ steps.changed-files.outputs.files }}" | grep -E '^docs/|README|\.md$' || true)
+          DOC_CHANGES=$(echo "${{ steps.changed-files.outputs.files }}" | grep -E '^${{ inputs.docs-path }}/|README|\.md$' || true)
 
           if [ -n "$DOC_CHANGES" ]; then
-            gh pr edit ${{ github.event.number }} --add-label "documentation"
+            gh pr edit ${{ inputs.pr-number }} --add-label "documentation"
           fi

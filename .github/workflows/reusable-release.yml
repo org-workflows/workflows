@@ -1,0 +1,223 @@
+# =============================================================================
+# Reusable Release Workflow
+# 버전 태그 푸시 시 자동으로 릴리즈를 생성합니다.
+# =============================================================================
+#
+# 사용법:
+#   jobs:
+#     release:
+#       uses: org-workflows/workflows/.github/workflows/reusable-release.yml@v1
+#       with:
+#         tag-name: ${{ github.ref_name }}
+#       secrets:
+#         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+#         SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+#
+# =============================================================================
+
+name: Reusable Release
+
+on:
+  workflow_call:
+    inputs:
+      tag-name:
+        description: 'Tag name for the release'
+        required: true
+        type: string
+      draft:
+        description: 'Create as draft release'
+        required: false
+        type: boolean
+        default: true
+      generate-changelog:
+        description: 'Generate changelog using AI'
+        required: false
+        type: boolean
+        default: true
+      commit-changelog:
+        description: 'Commit changelog to repository'
+        required: false
+        type: boolean
+        default: true
+      build-command:
+        description: 'Build command to run'
+        required: false
+        type: string
+        default: 'npm ci && npm run build'
+      build-artifact-path:
+        description: 'Path to build artifacts'
+        required: false
+        type: string
+        default: 'dist/'
+      notify-slack:
+        description: 'Send Slack notification'
+        required: false
+        type: boolean
+        default: false
+      node-version:
+        description: 'Node.js version'
+        required: false
+        type: string
+        default: '20'
+    secrets:
+      ANTHROPIC_API_KEY:
+        description: 'Anthropic API key'
+        required: true
+      SLACK_WEBHOOK:
+        description: 'Slack webhook URL'
+        required: false
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 전체 히스토리 필요 (changelog 생성용)
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: 'npm'
+
+      - name: Get Previous Tag
+        id: prev-tag
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          echo "tag=${PREV_TAG}" >> $GITHUB_OUTPUT
+          echo "Previous tag: ${PREV_TAG}"
+
+      - name: Generate Changelog
+        if: inputs.generate-changelog
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: |
+            --allowedTools "Bash(git log *),Write"
+          prompt: |
+            릴리즈 ${{ inputs.tag-name }} Changelog 생성
+
+            이전 태그: ${{ steps.prev-tag.outputs.tag || '(첫 릴리즈)' }}
+
+            ## 작업
+            1. 이전 태그 이후 모든 커밋 분석
+               - git log ${{ steps.prev-tag.outputs.tag }}..HEAD --oneline (이전 태그가 있는 경우)
+               - git log --oneline (첫 릴리즈인 경우)
+
+            2. Conventional Commits 기준으로 분류:
+               - ✨ Features (feat:)
+               - 🐛 Bug Fixes (fix:)
+               - 📝 Documentation (docs:)
+               - ♻️ Refactoring (refactor:)
+               - ⚡ Performance (perf:)
+               - 🔧 Chores (chore:)
+               - 💥 Breaking Changes (BREAKING CHANGE 또는 !)
+
+            3. CHANGELOG.md 파일 업데이트
+               - 기존 내용 위에 새 버전 추가
+               - 날짜 포함
+
+            4. RELEASE_NOTES.md 파일 생성
+               - 사용자 친화적 언어로 작성
+               - 주요 변경사항 3-5개 하이라이트
+               - Breaking Changes 강조
+               - 마이그레이션 가이드 (필요시)
+
+      - name: Commit Changelog
+        if: inputs.commit-changelog && inputs.generate-changelog
+        run: |
+          if [ -f CHANGELOG.md ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add CHANGELOG.md
+            git commit -m "docs: update changelog for ${{ inputs.tag-name }}" || echo "No changes to commit"
+            git push origin HEAD:main || echo "Could not push to main"
+          fi
+
+      - name: Build Release Assets
+        run: |
+          ${{ inputs.build-command }}
+
+          # 빌드 결과물 압축
+          if [ -d "${{ inputs.build-artifact-path }}" ]; then
+            tar -czf release-${{ inputs.tag-name }}.tar.gz ${{ inputs.build-artifact-path }}
+          fi
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 릴리즈 노트 파일 확인
+          if [ -f RELEASE_NOTES.md ]; then
+            NOTES_FILE="RELEASE_NOTES.md"
+          else
+            echo "No release notes generated, using auto-generated notes"
+            NOTES_FILE=""
+          fi
+
+          # Draft 옵션
+          DRAFT_FLAG=""
+          if [ "${{ inputs.draft }}" == "true" ]; then
+            DRAFT_FLAG="--draft"
+          fi
+
+          # GitHub Release 생성
+          if [ -f "release-${{ inputs.tag-name }}.tar.gz" ]; then
+            if [ -n "$NOTES_FILE" ]; then
+              gh release create ${{ inputs.tag-name }} \
+                --title "${{ inputs.tag-name }}" \
+                --notes-file "$NOTES_FILE" \
+                $DRAFT_FLAG \
+                release-${{ inputs.tag-name }}.tar.gz
+            else
+              gh release create ${{ inputs.tag-name }} \
+                --title "${{ inputs.tag-name }}" \
+                --generate-notes \
+                $DRAFT_FLAG \
+                release-${{ inputs.tag-name }}.tar.gz
+            fi
+          else
+            if [ -n "$NOTES_FILE" ]; then
+              gh release create ${{ inputs.tag-name }} \
+                --title "${{ inputs.tag-name }}" \
+                --notes-file "$NOTES_FILE" \
+                $DRAFT_FLAG
+            else
+              gh release create ${{ inputs.tag-name }} \
+                --title "${{ inputs.tag-name }}" \
+                --generate-notes \
+                $DRAFT_FLAG
+            fi
+          fi
+
+          echo "📦 Release created: ${{ inputs.tag-name }}"
+
+      - name: Notify Slack
+        if: inputs.notify-slack && vars.SLACK_ENABLED == 'true'
+        run: |
+          DRAFT_TEXT=""
+          if [ "${{ inputs.draft }}" == "true" ]; then
+            DRAFT_TEXT=" 초안"
+          fi
+
+          curl -X POST ${{ secrets.SLACK_WEBHOOK }} \
+            -H 'Content-type: application/json' \
+            -d '{
+              "text": "📦 새 릴리즈'"$DRAFT_TEXT"' 생성됨",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*릴리즈 ${{ inputs.tag-name }}'"$DRAFT_TEXT"' 생성* 📦\n<${{ github.server_url }}/${{ github.repository }}/releases|릴리즈 확인>"
+                  }
+                }
+              ]
+            }'

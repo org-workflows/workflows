@@ -1,20 +1,69 @@
 # =============================================================================
-# Issue Analysis Workflow (OpenAI)
+# Reusable Issue Analysis Workflow (OpenAI)
 # 이슈가 할당되면 관련 코드와 유사 이슈를 분석하여 코멘트로 제공합니다.
 # =============================================================================
 #
-# 필수 설정:
-#   - secrets.OPENAI_API_KEY: OpenAI API 키
-#
-# 사용 모델: GPT-4o-mini (비용 효율적)
+# 사용법:
+#   jobs:
+#     analyze:
+#       uses: org-workflows/workflows/.github/workflows/reusable-issue-analysis.yml@v1
+#       with:
+#         issue-number: ${{ github.event.issue.number }}
+#         issue-title: ${{ github.event.issue.title }}
+#         issue-body: ${{ github.event.issue.body }}
+#         assignee: ${{ github.event.assignee.login }}
+#       secrets:
+#         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 #
 # =============================================================================
 
-name: Issue Analysis
+name: Reusable Issue Analysis
 
 on:
-  issues:
-    types: [assigned]
+  workflow_call:
+    inputs:
+      issue-number:
+        description: 'Issue number to analyze'
+        required: true
+        type: number
+      issue-title:
+        description: 'Issue title'
+        required: true
+        type: string
+      issue-body:
+        description: 'Issue body'
+        required: false
+        type: string
+        default: ''
+      assignee:
+        description: 'Issue assignee login'
+        required: false
+        type: string
+        default: ''
+      model:
+        description: 'OpenAI model to use'
+        required: false
+        type: string
+        default: 'gpt-4o-mini'
+      search-extensions:
+        description: 'File extensions to search (comma-separated)'
+        required: false
+        type: string
+        default: 'ts,js,tsx,jsx,py'
+      max-related-files:
+        description: 'Maximum related files to show'
+        required: false
+        type: number
+        default: 10
+      max-similar-issues:
+        description: 'Maximum similar issues to show'
+        required: false
+        type: number
+        default: 5
+    secrets:
+      OPENAI_API_KEY:
+        description: 'OpenAI API key'
+        required: true
 
 jobs:
   analyze:
@@ -34,22 +83,29 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          ISSUE_TITLE="${{ github.event.issue.title }}"
-          ISSUE_BODY="${{ github.event.issue.body }}"
+          ISSUE_TITLE="${{ inputs.issue-title }}"
+          ISSUE_BODY="${{ inputs.issue-body }}"
 
           # 키워드 추출 (제목에서 주요 단어)
           KEYWORDS=$(echo "$ISSUE_TITLE" | tr '[:upper:]' '[:lower:]' | grep -oE '[a-z]{3,}' | head -5 | tr '\n' ' ')
 
+          # 확장자 목록 생성
+          EXTENSIONS="${{ inputs.search-extensions }}"
+          INCLUDE_PATTERN=""
+          for ext in $(echo "$EXTENSIONS" | tr ',' ' '); do
+            INCLUDE_PATTERN="$INCLUDE_PATTERN --include=\"*.$ext\""
+          done
+
           # 관련 파일 검색
           RELATED_FILES=""
           for keyword in $KEYWORDS; do
-            FILES=$(grep -rl "$keyword" --include="*.ts" --include="*.js" --include="*.tsx" --include="*.jsx" --include="*.py" . 2>/dev/null | head -3)
+            FILES=$(eval "grep -rl \"$keyword\" $INCLUDE_PATTERN . 2>/dev/null" | head -3)
             RELATED_FILES="$RELATED_FILES $FILES"
           done
-          RELATED_FILES=$(echo "$RELATED_FILES" | tr ' ' '\n' | sort -u | head -10 | tr '\n' ',')
+          RELATED_FILES=$(echo "$RELATED_FILES" | tr ' ' '\n' | sort -u | head -${{ inputs.max-related-files }} | tr '\n' ',')
 
           # 유사 이슈 검색
-          SIMILAR_ISSUES=$(gh issue list --state all --limit 5 --json number,title,state --jq '.[] | "#\(.number) [\(.state)] \(.title)"' 2>/dev/null | head -5)
+          SIMILAR_ISSUES=$(gh issue list --state all --limit ${{ inputs.max-similar-issues }} --json number,title,state --jq '.[] | "#\(.number) [\(.state)] \(.title)"' 2>/dev/null | head -${{ inputs.max-similar-issues }})
 
           # 출력 저장
           echo "keywords=$KEYWORDS" >> $GITHUB_OUTPUT
@@ -69,10 +125,10 @@ jobs:
           당신은 소프트웨어 개발 이슈 분석 전문가입니다.
 
           ## 이슈 정보
-          - 번호: #${{ github.event.issue.number }}
-          - 제목: ${{ github.event.issue.title }}
-          - 담당자: ${{ github.event.assignee.login }}
-          - 내용: ${{ github.event.issue.body }}
+          - 번호: #${{ inputs.issue-number }}
+          - 제목: ${{ inputs.issue-title }}
+          - 담당자: ${{ inputs.assignee }}
+          - 내용: ${{ inputs.issue-body }}
 
           ## 검색된 정보
           - 관련 키워드: ${{ steps.search.outputs.keywords }}
@@ -96,7 +152,7 @@ jobs:
           (권장하는 해결 방향과 구현 힌트)
 
           ---
-          🤖 *OpenAI GPT-4o-mini로 분석됨*
+          🤖 *OpenAI ${{ inputs.model }}로 분석됨*
           PROMPT_EOF
           )
 
@@ -106,8 +162,9 @@ jobs:
             -H "Content-Type: application/json" \
             -d "$(jq -n \
               --arg prompt "$PROMPT" \
+              --arg model "${{ inputs.model }}" \
               '{
-                model: "gpt-4o-mini",
+                model: $model,
                 messages: [{role: "user", content: $prompt}],
                 temperature: 0.7,
                 max_tokens: 1500
@@ -124,7 +181,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ -f /tmp/analysis.md ] && [ -s /tmp/analysis.md ]; then
-            gh issue comment ${{ github.event.issue.number }} --body-file /tmp/analysis.md
+            gh issue comment ${{ inputs.issue-number }} --body-file /tmp/analysis.md
           else
-            gh issue comment ${{ github.event.issue.number }} --body "⚠️ 이슈 분석을 완료할 수 없습니다. 관리자에게 문의하세요."
+            gh issue comment ${{ inputs.issue-number }} --body "⚠️ 이슈 분석을 완료할 수 없습니다. 관리자에게 문의하세요."
           fi

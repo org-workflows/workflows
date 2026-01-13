@@ -1,0 +1,138 @@
+# =============================================================================
+# Reusable Issue Triage Workflow
+# 새로운 이슈 생성 시 자동으로 분류하고 라벨을 부착합니다.
+# =============================================================================
+#
+# 사용법:
+#   jobs:
+#     triage:
+#       uses: org-workflows/workflows/.github/workflows/reusable-issue-triage.yml@v1
+#       secrets:
+#         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+#         SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+#
+# =============================================================================
+
+name: Reusable Issue Triage
+
+on:
+  workflow_call:
+    inputs:
+      issue-number:
+        description: 'Issue number to triage'
+        required: true
+        type: number
+      issue-title:
+        description: 'Issue title'
+        required: true
+        type: string
+      issue-body:
+        description: 'Issue body'
+        required: false
+        type: string
+        default: ''
+      issue-url:
+        description: 'Issue HTML URL'
+        required: true
+        type: string
+      notify-slack:
+        description: 'Send Slack notification'
+        required: false
+        type: boolean
+        default: false
+      labels-type:
+        description: 'Type labels (comma-separated)'
+        required: false
+        type: string
+        default: 'bug,feature,docs,question'
+      labels-priority:
+        description: 'Priority labels (comma-separated)'
+        required: false
+        type: string
+        default: 'P0-Critical,P1-High,P2-Medium,P3-Low'
+      labels-size:
+        description: 'Size labels (comma-separated)'
+        required: false
+        type: string
+        default: 'XS,S,M,L,XL'
+      labels-component:
+        description: 'Component labels (comma-separated)'
+        required: false
+        type: string
+        default: 'backend,frontend,infra,docs'
+    secrets:
+      ANTHROPIC_API_KEY:
+        description: 'Anthropic API key'
+        required: true
+      SLACK_WEBHOOK:
+        description: 'Slack webhook URL'
+        required: false
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      id-token: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Analyze and Label Issue
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: |
+            --allowedTools "Bash(gh issue edit *),Write"
+          prompt: |
+            이슈 #${{ inputs.issue-number }} 분석
+
+            제목: ${{ inputs.issue-title }}
+            내용: ${{ inputs.issue-body }}
+
+            ## 작업
+            1. 유형 분류: ${{ inputs.labels-type }} 중 하나
+            2. 우선순위: ${{ inputs.labels-priority }} 중 하나
+            3. 작업량: ${{ inputs.labels-size }} 중 하나
+            4. 컴포넌트: ${{ inputs.labels-component }} 중 하나
+
+            ## 판단 기준
+            - P0-Critical: 서비스 장애, 데이터 손실, 보안 취약점
+            - P1-High: 주요 기능 오류, 많은 사용자 영향
+            - P2-Medium: 일반 버그, 개선 필요
+            - P3-Low: 사소한 이슈, 제안
+
+            ## 실행
+            1. 분석이 끝나면 다음 명령어로 라벨을 추가하세요:
+               gh issue edit ${{ inputs.issue-number }} --add-label "<유형>,<우선순위>,<작업량>,<컴포넌트>"
+
+            2. 분석 결과를 /tmp/analysis.md 파일에 마크다운 형식으로 저장하세요.
+               (분류 결과, 판단 근거, 권장 조치사항 포함)
+
+      - name: Post Analysis Comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -f /tmp/analysis.md ]; then
+            gh issue comment ${{ inputs.issue-number }} --body-file /tmp/analysis.md
+          fi
+
+      - name: Notify Slack
+        if: success() && inputs.notify-slack && vars.SLACK_ENABLED == 'true'
+        run: |
+          curl -X POST ${{ secrets.SLACK_WEBHOOK }} \
+            -H 'Content-type: application/json' \
+            -d '{
+              "text": "🆕 새 이슈 분류 완료",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "이슈 #${{ inputs.issue-number }}: ${{ inputs.issue-title }}\n<${{ inputs.issue-url }}|이슈 보기>"
+                  }
+                }
+              ]
+            }'

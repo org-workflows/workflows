@@ -1,0 +1,220 @@
+# =============================================================================
+# Reusable Deploy Pipeline
+# 다른 저장소에서 호출하여 사용하는 배포 파이프라인
+# =============================================================================
+#
+# 사용법:
+#   jobs:
+#     deploy:
+#       uses: ldmrepo/org-workflows/.github/workflows/reusable-deploy.yml@v1
+#       with:
+#         environment: staging
+#         url: https://staging.example.com
+#       secrets: inherit
+#
+# =============================================================================
+
+name: Reusable Deploy Pipeline
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: '배포 환경 (staging, production)'
+        type: string
+        required: true
+
+      url:
+        description: '배포 대상 URL'
+        type: string
+        required: false
+        default: ''
+
+      node-version:
+        description: 'Node.js 버전'
+        type: string
+        required: false
+        default: '20'
+
+      working-directory:
+        description: '작업 디렉토리'
+        type: string
+        required: false
+        default: '.'
+
+      artifact-name:
+        description: '다운로드할 아티팩트 이름'
+        type: string
+        required: false
+        default: ''
+
+      run-health-check:
+        description: '헬스체크 실행 여부'
+        type: boolean
+        required: false
+        default: true
+
+      health-check-path:
+        description: '헬스체크 경로'
+        type: string
+        required: false
+        default: '/health'
+
+      health-check-retries:
+        description: '헬스체크 재시도 횟수'
+        type: number
+        required: false
+        default: 5
+
+      notify-slack:
+        description: 'Slack 알림 여부'
+        type: boolean
+        required: false
+        default: true
+
+    secrets:
+      DEPLOY_TOKEN:
+        description: '배포 토큰'
+        required: false
+
+      SLACK_WEBHOOK:
+        description: 'Slack 웹훅 URL'
+        required: false
+
+    outputs:
+      deploy-url:
+        description: '배포된 URL'
+        value: ${{ jobs.deploy.outputs.url }}
+
+      deploy-status:
+        description: '배포 상태'
+        value: ${{ jobs.deploy.outputs.status }}
+
+jobs:
+  deploy:
+    name: Deploy to ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.environment }}
+      url: ${{ inputs.url }}
+    outputs:
+      url: ${{ inputs.url }}
+      status: ${{ steps.deploy.outcome }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download Artifact
+        if: ${{ inputs.artifact-name != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ${{ inputs.working-directory }}/dist/
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Pre-deployment Info
+        run: |
+          echo "🚀 Deploying to ${{ inputs.environment }}"
+          echo "📦 Repository: ${{ github.repository }}"
+          echo "🔖 Ref: ${{ github.ref }}"
+          echo "📝 SHA: ${{ github.sha }}"
+          echo "👤 Actor: ${{ github.actor }}"
+
+      - name: Deploy
+        id: deploy
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          echo "🚀 Starting deployment..."
+
+          # 배포 스크립트가 있으면 실행
+          if [ -f "./scripts/deploy.sh" ]; then
+            chmod +x ./scripts/deploy.sh
+            ./scripts/deploy.sh
+          elif [ -f "./scripts/deploy-${{ inputs.environment }}.sh" ]; then
+            chmod +x ./scripts/deploy-${{ inputs.environment }}.sh
+            ./scripts/deploy-${{ inputs.environment }}.sh
+          else
+            echo "⚠️ No deploy script found, skipping deployment step"
+            echo "   Expected: ./scripts/deploy.sh or ./scripts/deploy-${{ inputs.environment }}.sh"
+          fi
+
+          echo "✅ Deployment step completed"
+
+      - name: Wait for Deployment
+        if: ${{ inputs.run-health-check && inputs.url != '' }}
+        run: |
+          echo "⏳ Waiting for deployment to stabilize..."
+          sleep 30
+
+      - name: Health Check
+        id: health-check
+        if: ${{ inputs.run-health-check && inputs.url != '' }}
+        run: |
+          echo "🏥 Running health check..."
+          URL="${{ inputs.url }}${{ inputs.health-check-path }}"
+          MAX_RETRIES=${{ inputs.health-check-retries }}
+          RETRY_COUNT=0
+
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$URL" || echo "000")
+
+            if [ "$HTTP_STATUS" = "200" ]; then
+              echo "✅ Health check passed (HTTP $HTTP_STATUS)"
+              exit 0
+            fi
+
+            echo "⏳ Attempt $((RETRY_COUNT + 1))/$MAX_RETRIES - HTTP $HTTP_STATUS"
+            RETRY_COUNT=$((RETRY_COUNT + 1))
+            sleep 10
+          done
+
+          echo "❌ Health check failed after $MAX_RETRIES attempts"
+          exit 1
+
+      - name: Notify Success
+        if: ${{ success() && inputs.notify-slack && secrets.SLACK_WEBHOOK != '' }}
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+        run: |
+          curl -X POST "$SLACK_WEBHOOK" \
+            -H 'Content-Type: application/json' \
+            -d "{
+              \"text\": \"✅ 배포 완료: ${{ inputs.environment }}\",
+              \"blocks\": [
+                {
+                  \"type\": \"section\",
+                  \"text\": {
+                    \"type\": \"mrkdwn\",
+                    \"text\": \"*✅ ${{ inputs.environment }} 배포 완료*\n• 저장소: \`${{ github.repository }}\`\n• 커밋: \`${{ github.sha }}\`\n• 배포자: \`${{ github.actor }}\`\"
+                  }
+                }
+              ]
+            }"
+
+      - name: Notify Failure
+        if: ${{ failure() && inputs.notify-slack && secrets.SLACK_WEBHOOK != '' }}
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+        run: |
+          curl -X POST "$SLACK_WEBHOOK" \
+            -H 'Content-Type: application/json' \
+            -d "{
+              \"text\": \"❌ 배포 실패: ${{ inputs.environment }}\",
+              \"blocks\": [
+                {
+                  \"type\": \"section\",
+                  \"text\": {
+                    \"type\": \"mrkdwn\",
+                    \"text\": \"*❌ ${{ inputs.environment }} 배포 실패*\n• 저장소: \`${{ github.repository }}\`\n• 커밋: \`${{ github.sha }}\`\n• <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|로그 확인>\"
+                  }
+                }
+              ]
+            }"

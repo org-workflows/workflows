@@ -1,0 +1,206 @@
+# =============================================================================
+# Reusable AI Code Review Pipeline
+# Claude + OpenAI를 사용한 이중 AI 코드 리뷰
+# =============================================================================
+#
+# 사용법:
+#   jobs:
+#     review:
+#       uses: ldmrepo/org-workflows/.github/workflows/reusable-code-review.yml@v1
+#       secrets:
+#         ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+#         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+#
+# =============================================================================
+
+name: Reusable AI Code Review
+
+on:
+  workflow_call:
+    inputs:
+      run-security-review:
+        description: 'Claude 보안 리뷰 실행'
+        type: boolean
+        required: false
+        default: true
+
+      run-quality-review:
+        description: 'OpenAI 품질 리뷰 실행'
+        type: boolean
+        required: false
+        default: true
+
+      notify-slack:
+        description: 'Slack 알림 여부'
+        type: boolean
+        required: false
+        default: true
+
+    secrets:
+      ANTHROPIC_API_KEY:
+        description: 'Anthropic API Key (Claude)'
+        required: true
+
+      OPENAI_API_KEY:
+        description: 'OpenAI API Key'
+        required: false
+
+      SLACK_WEBHOOK:
+        description: 'Slack 웹훅 URL'
+        required: false
+
+jobs:
+  security-review:
+    name: Security Review (Claude)
+    if: ${{ inputs.run-security-review }}
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get Changed Files
+        id: changed-files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "files=$(gh pr diff ${{ github.event.number }} --name-only | tr '\n' ' ')" >> $GITHUB_OUTPUT
+
+      - name: Security Review with Claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: |
+            --allowedTools "Bash(gh pr comment *),Write"
+          prompt: |
+            PR #${{ github.event.number }} 보안 검토
+
+            변경된 파일: ${{ steps.changed-files.outputs.files }}
+
+            ## 검토 항목
+            - SQL Injection 취약점
+            - XSS (Cross-Site Scripting)
+            - 하드코딩된 시크릿/API 키
+            - 민감정보 로깅
+            - 인증/인가 우회 가능성
+
+            ## 출력
+            /tmp/security-review.md에 결과 저장:
+            - 🔴 Critical / 🟠 Warning / 🟡 Info
+            - 마지막에 '🔒 *Claude Security Review*' 서명
+
+      - name: Post Security Review
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -f /tmp/security-review.md ]; then
+            gh pr comment ${{ github.event.number }} --body-file /tmp/security-review.md
+          fi
+
+  quality-review:
+    name: Quality Review (OpenAI)
+    if: ${{ inputs.run-quality-review && secrets.OPENAI_API_KEY != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get PR Diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr diff ${{ github.event.number }} | head -c 15000 > /tmp/pr-diff.txt
+
+      - name: Quality Review with OpenAI
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          DIFF_CONTENT=$(cat /tmp/pr-diff.txt)
+
+          RESPONSE=$(curl -s https://api.openai.com/v1/chat/completions \
+            -H "Authorization: Bearer $OPENAI_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n \
+              --arg diff "$DIFF_CONTENT" \
+              --arg pr "${{ github.event.number }}" \
+              --arg title "${{ github.event.pull_request.title }}" \
+              '{
+                model: "gpt-4o",
+                messages: [{
+                  role: "system",
+                  content: "시니어 소프트웨어 엔지니어로서 코드 리뷰를 수행합니다."
+                }, {
+                  role: "user",
+                  content: ("PR #" + $pr + ": " + $title + "\n\n```diff\n" + $diff + "\n```\n\n코드 품질 점수(A-F)와 개선사항을 마크다운으로 작성하세요.\n\n마지막에 🤖 *OpenAI GPT-4o Code Review* 서명 추가")
+                }],
+                temperature: 0.3,
+                max_tokens: 2000
+              }')")
+
+          echo "$RESPONSE" | jq -r '.choices[0].message.content // "분석 실패"' > /tmp/quality-review.md
+
+      - name: Post Quality Review
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -f /tmp/quality-review.md ] && [ -s /tmp/quality-review.md ]; then
+            gh pr comment ${{ github.event.number }} --body-file /tmp/quality-review.md
+          fi
+
+  summary:
+    name: Review Summary
+    needs: [security-review, quality-review]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+
+    steps:
+      - name: Post Summary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SECURITY="${{ needs.security-review.result }}"
+          QUALITY="${{ needs.quality-review.result }}"
+
+          gh pr comment ${{ github.event.number }} --body "## 🔍 AI 코드 리뷰 완료
+
+          | AI | 담당 영역 | 상태 |
+          |-----|----------|------|
+          | 🔒 Claude | 보안 검토 | $( [ \"$SECURITY\" = \"success\" ] && echo \"✅ 완료\" || echo \"⏭️ 스킵\" ) |
+          | 📊 OpenAI | 코드 품질 | $( [ \"$QUALITY\" = \"success\" ] && echo \"✅ 완료\" || echo \"⏭️ 스킵\" ) |
+
+          ---
+          ⚠️ **AI 리뷰는 참고용입니다. 최종 승인은 반드시 팀원이 수행해야 합니다.**"
+
+      - name: Notify Slack
+        if: ${{ inputs.notify-slack && secrets.SLACK_WEBHOOK != '' }}
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+        run: |
+          curl -X POST "$SLACK_WEBHOOK" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"text\": \"🔍 AI 코드 리뷰 완료: PR #${{ github.event.number }}\",
+              \"blocks\": [
+                {
+                  \"type\": \"section\",
+                  \"text\": {
+                    \"type\": \"mrkdwn\",
+                    \"text\": \"*🔍 AI 코드 리뷰 완료*\n• PR: #${{ github.event.number }}\n• <${{ github.event.pull_request.html_url }}|PR 보기>\"
+                  }
+                }
+              ]
+            }"

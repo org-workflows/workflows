@@ -1,0 +1,234 @@
+# =============================================================================
+# Reusable CI Pipeline
+# 다른 저장소에서 호출하여 사용하는 CI 파이프라인
+# =============================================================================
+#
+# 사용법:
+#   jobs:
+#     ci:
+#       uses: ldmrepo/org-workflows/.github/workflows/reusable-ci.yml@v1
+#       with:
+#         node-version: '20'
+#       secrets: inherit
+#
+# =============================================================================
+
+name: Reusable CI Pipeline
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: 'Node.js 버전'
+        type: string
+        required: false
+        default: '20'
+
+      working-directory:
+        description: '작업 디렉토리 (모노레포용)'
+        type: string
+        required: false
+        default: '.'
+
+      package-manager:
+        description: '패키지 매니저 (npm, yarn, pnpm)'
+        type: string
+        required: false
+        default: 'npm'
+
+      run-lint:
+        description: 'Lint 실행 여부'
+        type: boolean
+        required: false
+        default: true
+
+      run-tests:
+        description: '테스트 실행 여부'
+        type: boolean
+        required: false
+        default: true
+
+      run-build:
+        description: '빌드 실행 여부'
+        type: boolean
+        required: false
+        default: true
+
+      coverage-threshold:
+        description: '커버리지 임계값 (%)'
+        type: number
+        required: false
+        default: 0
+
+    secrets:
+      NPM_TOKEN:
+        description: 'npm 레지스트리 토큰'
+        required: false
+
+    outputs:
+      build-version:
+        description: '빌드된 버전'
+        value: ${{ jobs.build.outputs.version }}
+
+jobs:
+  lint:
+    name: Lint
+    if: ${{ inputs.run-lint }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: ${{ inputs.package-manager }}
+
+      - name: Install Dependencies
+        run: |
+          if [ "${{ inputs.package-manager }}" = "yarn" ]; then
+            yarn install --frozen-lockfile
+          elif [ "${{ inputs.package-manager }}" = "pnpm" ]; then
+            pnpm install --frozen-lockfile
+          else
+            npm ci
+          fi
+
+      - name: Run Lint
+        run: |
+          if [ "${{ inputs.package-manager }}" = "yarn" ]; then
+            yarn lint
+          elif [ "${{ inputs.package-manager }}" = "pnpm" ]; then
+            pnpm lint
+          else
+            npm run lint
+          fi
+
+  test:
+    name: Test
+    if: ${{ inputs.run-tests }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: ${{ inputs.package-manager }}
+
+      - name: Install Dependencies
+        run: |
+          if [ "${{ inputs.package-manager }}" = "yarn" ]; then
+            yarn install --frozen-lockfile
+          elif [ "${{ inputs.package-manager }}" = "pnpm" ]; then
+            pnpm install --frozen-lockfile
+          else
+            npm ci
+          fi
+
+      - name: Run Tests
+        run: |
+          if [ "${{ inputs.package-manager }}" = "yarn" ]; then
+            yarn test --coverage
+          elif [ "${{ inputs.package-manager }}" = "pnpm" ]; then
+            pnpm test --coverage
+          else
+            npm test -- --coverage
+          fi
+
+      - name: Check Coverage Threshold
+        if: ${{ inputs.coverage-threshold > 0 }}
+        run: |
+          if [ -f coverage/coverage-summary.json ]; then
+            COVERAGE=$(cat coverage/coverage-summary.json | jq '.total.lines.pct')
+            echo "Current coverage: ${COVERAGE}%"
+            if (( $(echo "$COVERAGE < ${{ inputs.coverage-threshold }}" | bc -l) )); then
+              echo "::error::Coverage ${COVERAGE}% is below threshold ${{ inputs.coverage-threshold }}%"
+              exit 1
+            fi
+            echo "✅ Coverage meets threshold"
+          fi
+
+      - name: Upload Coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: ${{ inputs.working-directory }}/coverage/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  build:
+    name: Build
+    if: ${{ inputs.run-build }}
+    needs: [lint, test]
+    # lint나 test가 스킵되어도 실행
+    if: |
+      always() &&
+      (needs.lint.result == 'success' || needs.lint.result == 'skipped') &&
+      (needs.test.result == 'success' || needs.test.result == 'skipped')
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: ${{ inputs.package-manager }}
+
+      - name: Install Dependencies
+        run: |
+          if [ "${{ inputs.package-manager }}" = "yarn" ]; then
+            yarn install --frozen-lockfile
+          elif [ "${{ inputs.package-manager }}" = "pnpm" ]; then
+            pnpm install --frozen-lockfile
+          else
+            npm ci
+          fi
+
+      - name: Get Version
+        id: version
+        run: |
+          VERSION=$(node -p "require('./package.json').version" 2>/dev/null || echo "0.0.0")
+          echo "value=$VERSION" >> $GITHUB_OUTPUT
+          echo "📦 Version: $VERSION"
+
+      - name: Build
+        run: |
+          if [ "${{ inputs.package-manager }}" = "yarn" ]; then
+            yarn build
+          elif [ "${{ inputs.package-manager }}" = "pnpm" ]; then
+            pnpm build
+          else
+            npm run build
+          fi
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ steps.version.outputs.value }}
+          path: |
+            ${{ inputs.working-directory }}/dist/
+            ${{ inputs.working-directory }}/build/
+          retention-days: 7
+          if-no-files-found: ignore

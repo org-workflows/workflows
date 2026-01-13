@@ -1,0 +1,19 @@
+# Node.js 프로젝트 CI 예제
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    uses: ldmrepo/org-workflows/.github/workflows/reusable-ci.yml@v1
+    with:
+      node-version: '20'
+      run-lint: true
+      run-tests: true
+      run-build: true
+      coverage-threshold: 80
+    secrets: inherit

@@ -1,0 +1,242 @@
+# =============================================================================
+# Reusable Security Scan Pipeline
+# 다른 저장소에서 호출하여 사용하는 보안 스캔 파이프라인
+# =============================================================================
+#
+# 사용법:
+#   jobs:
+#     security:
+#       uses: ldmrepo/org-workflows/.github/workflows/reusable-security.yml@v1
+#       secrets: inherit
+#
+# =============================================================================
+
+name: Reusable Security Scan
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: 'Node.js 버전'
+        type: string
+        required: false
+        default: '20'
+
+      working-directory:
+        description: '작업 디렉토리'
+        type: string
+        required: false
+        default: '.'
+
+      run-npm-audit:
+        description: 'npm audit 실행 여부'
+        type: boolean
+        required: false
+        default: true
+
+      run-secret-scan:
+        description: '시크릿 스캔 실행 여부'
+        type: boolean
+        required: false
+        default: true
+
+      fail-on-high:
+        description: 'high 이상 취약점 발견 시 실패'
+        type: boolean
+        required: false
+        default: true
+
+      notify-slack:
+        description: 'Slack 알림 여부'
+        type: boolean
+        required: false
+        default: true
+
+    secrets:
+      SLACK_WEBHOOK:
+        description: 'Slack 웹훅 URL'
+        required: false
+
+    outputs:
+      vulnerabilities-found:
+        description: '취약점 발견 여부'
+        value: ${{ jobs.audit.outputs.vulnerabilities-found }}
+
+      critical-count:
+        description: 'Critical 취약점 수'
+        value: ${{ jobs.audit.outputs.critical }}
+
+      high-count:
+        description: 'High 취약점 수'
+        value: ${{ jobs.audit.outputs.high }}
+
+jobs:
+  audit:
+    name: Dependency Audit
+    if: ${{ inputs.run-npm-audit }}
+    runs-on: ubuntu-latest
+    outputs:
+      vulnerabilities-found: ${{ steps.audit.outputs.found }}
+      critical: ${{ steps.audit.outputs.critical }}
+      high: ${{ steps.audit.outputs.high }}
+
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      - name: Install Dependencies
+        run: npm ci
+        continue-on-error: true
+
+      - name: Run npm audit
+        id: audit
+        continue-on-error: true
+        run: |
+          npm audit --json > audit-result.json 2>&1 || true
+
+          if [ -f audit-result.json ]; then
+            CRITICAL=$(cat audit-result.json | jq '.metadata.vulnerabilities.critical // 0')
+            HIGH=$(cat audit-result.json | jq '.metadata.vulnerabilities.high // 0')
+            MODERATE=$(cat audit-result.json | jq '.metadata.vulnerabilities.moderate // 0')
+            LOW=$(cat audit-result.json | jq '.metadata.vulnerabilities.low // 0')
+            TOTAL=$((CRITICAL + HIGH + MODERATE + LOW))
+
+            echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
+            echo "high=$HIGH" >> $GITHUB_OUTPUT
+            echo "moderate=$MODERATE" >> $GITHUB_OUTPUT
+            echo "low=$LOW" >> $GITHUB_OUTPUT
+
+            if [ "$TOTAL" -gt 0 ]; then
+              echo "found=true" >> $GITHUB_OUTPUT
+            else
+              echo "found=false" >> $GITHUB_OUTPUT
+            fi
+
+            echo "## 📊 취약점 요약" >> $GITHUB_STEP_SUMMARY
+            echo "| 심각도 | 개수 |" >> $GITHUB_STEP_SUMMARY
+            echo "|--------|------|" >> $GITHUB_STEP_SUMMARY
+            echo "| 🔴 Critical | $CRITICAL |" >> $GITHUB_STEP_SUMMARY
+            echo "| 🟠 High | $HIGH |" >> $GITHUB_STEP_SUMMARY
+            echo "| 🟡 Moderate | $MODERATE |" >> $GITHUB_STEP_SUMMARY
+            echo "| 🟢 Low | $LOW |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "found=false" >> $GITHUB_OUTPUT
+            echo "critical=0" >> $GITHUB_OUTPUT
+            echo "high=0" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check Threshold
+        if: ${{ inputs.fail-on-high }}
+        run: |
+          CRITICAL=${{ steps.audit.outputs.critical }}
+          HIGH=${{ steps.audit.outputs.high }}
+
+          if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ]; then
+            echo "::error::Found $CRITICAL critical and $HIGH high vulnerabilities"
+            exit 1
+          fi
+
+      - name: Upload Audit Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-audit-report
+          path: ${{ inputs.working-directory }}/audit-result.json
+          retention-days: 30
+          if-no-files-found: ignore
+
+  secret-scan:
+    name: Secret Scan
+    if: ${{ inputs.run-secret-scan }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan for Secrets
+        id: secret-scan
+        run: |
+          echo "🔍 Scanning for secrets..."
+
+          # 간단한 패턴 스캔
+          PATTERNS=(
+            "AKIA[0-9A-Z]{16}"                    # AWS Access Key
+            "sk-[a-zA-Z0-9]{48}"                   # OpenAI API Key
+            "ghp_[a-zA-Z0-9]{36}"                  # GitHub PAT
+            "xox[baprs]-[0-9a-zA-Z-]+"             # Slack Token
+            "-----BEGIN.*PRIVATE KEY-----"         # Private Key
+          )
+
+          FOUND=0
+          for pattern in "${PATTERNS[@]}"; do
+            if grep -rE "$pattern" --include="*.js" --include="*.ts" --include="*.json" --include="*.yml" --include="*.yaml" --include="*.env*" . 2>/dev/null | grep -v node_modules | grep -v ".git"; then
+              echo "::warning::Potential secret found matching pattern: $pattern"
+              FOUND=1
+            fi
+          done
+
+          if [ "$FOUND" -eq 1 ]; then
+            echo "found=true" >> $GITHUB_OUTPUT
+            echo "⚠️ Potential secrets detected!" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "found=false" >> $GITHUB_OUTPUT
+            echo "✅ No secrets detected" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Fail on Secrets
+        if: steps.secret-scan.outputs.found == 'true'
+        run: |
+          echo "::error::Potential secrets found in codebase"
+          exit 1
+
+  notify:
+    name: Notify Results
+    needs: [audit, secret-scan]
+    if: always() && inputs.notify-slack
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Notify Slack
+        if: ${{ secrets.SLACK_WEBHOOK != '' }}
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+        run: |
+          AUDIT_STATUS="${{ needs.audit.result }}"
+          SECRET_STATUS="${{ needs.secret-scan.result }}"
+          CRITICAL="${{ needs.audit.outputs.critical || 0 }}"
+          HIGH="${{ needs.audit.outputs.high || 0 }}"
+
+          if [ "$AUDIT_STATUS" = "success" ] && [ "$SECRET_STATUS" = "success" ]; then
+            EMOJI="✅"
+            STATUS="통과"
+          else
+            EMOJI="🔴"
+            STATUS="주의 필요"
+          fi
+
+          curl -X POST "$SLACK_WEBHOOK" \
+            -H 'Content-Type: application/json' \
+            -d "{
+              \"text\": \"$EMOJI 보안 스캔 $STATUS\",
+              \"blocks\": [
+                {
+                  \"type\": \"section\",
+                  \"text\": {
+                    \"type\": \"mrkdwn\",
+                    \"text\": \"*$EMOJI 보안 스캔 결과: $STATUS*\n• 저장소: \`${{ github.repository }}\`\n• Critical: $CRITICAL, High: $HIGH\"
+                  }
+                }
+              ]
+            }"

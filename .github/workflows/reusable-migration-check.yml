@@ -14,7 +14,7 @@
 #
 # =============================================================================
 
-name: Reusable Migration Safety Check
+name: 마이그레이션 검증
 
 on:
   workflow_call:
